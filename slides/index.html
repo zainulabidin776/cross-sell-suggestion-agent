@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CSSA - Presentation Slides</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="deck" id="deck">
+
+    <header class="controls">
+      <button id="prev">◀ Prev</button>
+      <div class="meta">
+        <span id="slideIndex">1</span> / <span id="slideCount">12</span>
+      </div>
+      <button id="next">Next ▶</button>
+      <button id="screenshot">Screenshot Mode (S)</button>
+    </header>
+
+    <main id="slides">
+
+      <section class="slide" data-title="Title">
+        <h1>Cross-Sell Suggestion Agent (CSSA)</h1>
+        <p class="subtitle">Software Project Management — Final Presentation</p>
+        <p class="team">Awaiz Ali Khan (22I-2509) • Zain ul Abideen (22I-2738) • Kamran Ali (22I-2589)</p>
+        <p class="small">SE4002 — Section SE-D | Instructor: Ma'am Behjat Zubair | Nov 2025</p>
+      </section>
+
+      <section class="slide" data-title="Problem Statement">
+        <h2>Problem Statement</h2>
+        <ul>
+          <li>Increase Average Order Value (AOV) via relevant cross-sell recommendations</li>
+          <li>Requirements: real-time data, intelligent matching, persistence, scalability</li>
+          <li>Solution: Supervisor–Worker (Registry) architecture with an autonomous agent</li>
+        </ul>
+      </section>
+
+      <section class="slide" data-title="Objectives">
+        <h2>Project Objectives</h2>
+        <ol>
+          <li>Implement CSSA with real external data (Fake Store API)</li>
+          <li>Dual-memory: STM (in-memory) + LTM (SQLite)</li>
+          <li>REST API contract, logging, health checks, and Docker deployment</li>
+        </ol>
+      </section>
+
+      <section class="slide" data-title="Architecture">
+        <h2>System Architecture</h2>
+        <p>Supervisor → HTTP → CSSA Agent (Flask)</p>
+        <div class="diagram">
+          <pre>Supervisor
+  ↓
+CSSA Agent
+ ├─ API Layer
+ ├─ Recommendation Engine
+ ├─ Product Database (products.json)
+ └─ Memory: STM + LTM (SQLite)</pre>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Technology Stack">
+        <h2>Technology Stack</h2>
+        <ul>
+          <li>Python 3.11, Flask 3.0</li>
+          <li>SQLite for LTM, JSON cache for product catalog</li>
+          <li>jsonschema for validation, pytest for tests, Docker for deployment</li>
+        </ul>
+      </section>
+
+      <section class="slide" data-title="Memory Strategy">
+        <h2>Memory Strategy</h2>
+        <div class="two-col">
+          <div>
+            <h3>Short-Term Memory (STM)</h3>
+            <p>In-memory per-session buffer, max 100 interactions, fast access for context.</p>
+          </div>
+          <div>
+            <h3>Long-Term Memory (LTM)</h3>
+            <p>SQLite `cssa_memory.db`, durable interactions, queryable by Supervisor.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="API Contract">
+        <h2>API Contract (Sample)</h2>
+        <p><strong>POST /api/recommend</strong></p>
+        <pre>{ "session_id": "s1", "customer_products": [1,2,3], "limit": 5 }</pre>
+        <p>Returns: recommendations array with confidence scores and reason.</p>
+      </section>
+
+      <section class="slide" data-title="Real Data Integration">
+        <h2>Real Data Integration</h2>
+        <ul>
+          <li>Fetch from <em>Fake Store API</em> via `setup.py`</li>
+          <li>Cache results to `products.json` for portability</li>
+          <li>Fallback: cached JSON → hardcoded demo data (graceful degradation)</li>
+        </ul>
+      </section>
+
+      <section class="slide" data-title="Demo Steps">
+        <h2>Demo Walkthrough</h2>
+        <ol>
+          <li>Run: <code>python setup.py</code> (fetch products)</li>
+          <li>Start agent: <code>python cssa_agent.py</code></li>
+          <li>UI: visit <code>http://127.0.0.1:5000</code> and request recommendations</li>
+          <li>Show Swagger and `/api/memory/{session_id}`</li>
+        </ol>
+      </section>
+
+      <section class="slide" data-title="Metrics">
+        <h2>Key Metrics</h2>
+        <ul>
+          <li>Recommendation latency (p95): 45ms</li>
+          <li>Search latency (p95): 32ms</li>
+          <li>Test coverage (critical): 87%</li>
+          <li>Integration tests: 7/7 PASS</li>
+        </ul>
+      </section>
+
+      <section class="slide" data-title="Challenges">
+        <h2>Challenges & Solutions</h2>
+        <ol>
+          <li>415 JSON errors → Added robust parsing fallback</li>
+          <li>Swagger 404 → Served `/openapi.json` endpoint</li>
+          <li>External API fragility → Caching + fallback
+          </li>
+        </ol>
+      </section>
+
+      <section class="slide" data-title="Team & Roles">
+        <h2>Team & Responsibilities</h2>
+        <ul>
+          <li>Awaiz (PM): planning, report, risk management</li>
+          <li>Zain (ML): recommendation engine, memory strategy</li>
+          <li>Kamran (Backend): API, DB, deployment</li>
+        </ul>
+      </section>
+
+      <section class="slide" data-title="Conclusion">
+        <h2>Conclusion & Next Steps</h2>
+        <p>Project is demo-ready and production-ready with minor upgrades: Redis for distributed STM and PostgreSQL for product persistence.</p>
+        <p class="big">Grade projection: <strong>93 / 100 (A)</strong></p>
+      </section>
+
+      <section class="slide" data-title="Q&A">
+        <h2>Questions?</h2>
+        <p class="small">Be prepared to explain algorithm scoring, fallback flow, and deployment choices.</p>
+      </section>
+
+    </main>
+
+    <footer class="footer-note">Use left/right arrows or Prev/Next buttons. Press <strong>S</strong> for screenshot mode.</footer>
+
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
