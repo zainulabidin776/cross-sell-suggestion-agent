@@ -1,0 +1,18 @@
+version: '3.8'
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./:/app
+      - ./cssa_memory.db:/app/cssa_memory.db
+    environment:
+      - FLASK_ENV=production
+    depends_on: []
+
+  # Optional Redis service for future scaling (commented out)
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"

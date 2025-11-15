@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cross-Sell Suggestion Agent - Demo</title>
+    <link rel="stylesheet" href="/ui/styles.css">
+  </head>
+  <body>
+    <div class="container">
+      <h1>Cross-Sell Suggestion Agent</h1>
+
+      <section class="card">
+        <h2>Request Recommendation</h2>
+        <label>Product ID</label>
+        <input id="product_id" placeholder="e.g., laptop" />
+        <label>Session ID (optional)</label>
+        <input id="session_id" placeholder="session_123" />
+        <label>Limit</label>
+        <input id="limit" type="number" value="3" min="1" />
+        <button id="btn_recommend">Get Recommendations</button>
+      </section>
+
+      <section class="card">
+        <h2>Search Products</h2>
+        <input id="search_query" placeholder="Search term (e.g., phone)" />
+        <button id="btn_search">Search</button>
+      </section>
+
+      <section class="card">
+        <h2>Agent Status</h2>
+        <button id="btn_status">Get Status</button>
+        <pre id="status_area" class="output"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Response</h2>
+        <pre id="output" class="output">Results will appear here</pre>
+      </section>
+    </div>
+
+    <script src="/ui/app.js"></script>
+  </body>
+</html>

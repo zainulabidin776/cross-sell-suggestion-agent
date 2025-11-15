@@ -1,0 +1,52 @@
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Generated data files (products cached from API)
+products.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+cssa_memory.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+cssa_agent.log*
+
+# OS
+Thumbs.db
+.env
+.env.local
