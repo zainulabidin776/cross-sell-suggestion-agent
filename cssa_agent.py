@@ -131,6 +131,27 @@ class ProductDatabase:
             logger.exception(f"Error loading JSON: {e}")
         return False
     
+    def find_product_by_name(self, search_term: str) -> Optional[Dict]:
+        """Find product by natural name search (e.g., 'laptop', 'phone', 'shirt')"""
+        search_term = search_term.lower().strip()
+        
+        # First: Exact name match
+        for product in self.products.values():
+            if product['name'].lower() == search_term:
+                return product
+        
+        # Second: Name contains search term
+        for product in self.products.values():
+            if search_term in product['name'].lower():
+                return product
+        
+        # Third: Category match
+        for product in self.products.values():
+            if search_term in product['category'].lower():
+                return product
+        
+        return None
+    
     def _compute_transaction_patterns(self):
         """Compute confidence scores based on cross-sell relationships"""
         self.transaction_patterns = {}
@@ -472,11 +493,29 @@ def recommend():
         # Extract parameters
         request_id = data.get('request_id', str(uuid.uuid4()))
         session_id = data.get('session_id', str(uuid.uuid4()))
-        product_id = data.get('product_id')
+        product_input = data.get('product_id')  # Can be ID or natural name
         user_id = data.get('user_id')
         limit = min(data.get('limit', 3), 5)  # Enforce max 5
         
-        logger.info(f"Recommendation request: {request_id} for product: {product_id}")
+        logger.info(f"Recommendation request: {request_id} for product: {product_input}")
+        
+        # Smart search: Try as ID first, then as natural name
+        product = product_db.get_product(product_input)
+        if not product:
+            # Try natural name search
+            product = product_db.find_product_by_name(product_input)
+            if product:
+                logger.info(f"Found product by name: '{product_input}' -> {product['id']}")
+                product_id = product['id']
+            else:
+                return jsonify({
+                    "status": "error",
+                    "message": f"Product '{product_input}' not found. Try searching: laptop, phone, shirt, bag, etc.",
+                    "hint": "Use natural product names like 'laptop' or 'phone', or use /api/search to browse products",
+                    "timestamp": datetime.now().isoformat()
+                }), 404
+        else:
+            product_id = product_input
         
         # Generate recommendations using ONLY Gemini 2.0 Flash
         recommendations = rec_engine.generate_recommendations(
