@@ -97,31 +97,25 @@ def generate_cross_sell_recommendations(product_name: str, limit: int = 3) -> di
     if limit == 0:
         return {"recommendations": []}
     
-    # Create prompt for Gemini
-    prompt = f"""You are a product recommendation expert. A customer is viewing/purchasing a "{product_name}".
+    # Create prompt for Gemini with very strict JSON formatting instructions
+    prompt = f"""Generate {limit} product recommendations for someone buying: "{product_name}"
 
-Generate {limit} cross-sell product recommendations that are commonly bought together with this product.
+Return ONLY valid JSON in this EXACT format (no markdown, no explanations, pure JSON only):
 
-CRITICAL: Return ONLY valid JSON, no markdown, no code blocks, no extra text.
-
-Format:
 {{
   "recommendations": [
-    {{
-      "product_name": "Product Name",
-      "reason": "Brief reason why this pairs well",
-      "category": "Product Category",
-      "estimated_price": "$XX.XX"
-    }}
+    {{"product_name": "Product 1", "reason": "Why it pairs well", "category": "Category", "estimated_price": "$29.99"}},
+    {{"product_name": "Product 2", "reason": "Why it pairs well", "category": "Category", "estimated_price": "$39.99"}}
   ]
 }}
 
-Rules:
-- Return exactly {limit} recommendations
-- Use double quotes for all strings, no single quotes
-- Reason should be 1 concise sentence
-- Make realistic, practical suggestions
-- Return ONLY the JSON object, nothing else"""
+CRITICAL RULES:
+1. Output ONLY the JSON object - nothing before, nothing after
+2. Use ONLY double quotes ("), never single quotes (')
+3. Each recommendation must have ALL 4 fields: product_name, reason, category, estimated_price
+4. Add comma after each recommendation EXCEPT the last one
+5. Keep reasons under 15 words
+6. Return exactly {limit} recommendations"""
     
     try:
         logger.info(f"Requesting {limit} recommendations for: {product_name}")
@@ -147,22 +141,64 @@ Rules:
         if start_idx != -1 and end_idx != -1:
             response_text = response_text[start_idx:end_idx+1]
         
-        # Additional JSON cleanup
-        # Fix common issues: trailing commas, single quotes, missing commas
+        # Aggressive JSON cleanup with multiple passes
         import re
-        response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)  # Remove trailing commas
-        response_text = response_text.replace("'", '"')  # Replace single quotes with double quotes
         
-        logger.info(f"Cleaned response: {response_text[:200]}...")
+        # Pass 1: Fix quotes
+        response_text = response_text.replace("'", '"')
+        
+        # Pass 2: Remove trailing commas before closing brackets
+        response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)
+        
+        # Pass 3: Fix missing commas between objects/arrays
+        response_text = re.sub(r'\}(\s*)\{', r'},\1{', response_text)
+        response_text = re.sub(r'\](\s*)\[', r'],\1[', response_text)
+        
+        # Pass 4: Fix missing commas after strings/numbers before property names
+        response_text = re.sub(r'("[^"]*")(\s+)(")', r'\1,\2\3', response_text)
+        response_text = re.sub(r'(\d)(\s+)(")', r'\1,\2\3', response_text)
+        
+        # Pass 5: Remove any duplicate commas
+        response_text = re.sub(r',\s*,', ',', response_text)
+        
+        logger.info(f"Cleaned response (first 300 chars): {response_text[:300]}...")
         
         try:
             recommendations_data = json.loads(response_text)
-        except json.JSONDecodeError as e:
-            # Last resort: try to fix missing commas between objects
-            logger.warning(f"Initial JSON parse failed, attempting fixes: {e}")
-            response_text = re.sub(r'\}(\s*)\{', r'},\1{', response_text)
-            response_text = re.sub(r'\](\s*)\[', r'],\1[', response_text)
-            recommendations_data = json.loads(response_text)
+        except json.JSONDecodeError as parse_error:
+            # Last resort: try to manually fix the specific error
+            logger.warning(f"JSON parse failed at position {parse_error.pos}: {parse_error.msg}")
+            error_context = response_text[max(0, parse_error.pos-60):min(len(response_text), parse_error.pos+60)]
+            logger.warning(f"Error context: ...{error_context}...")
+            
+            # Try different fixes based on error type
+            if "Expecting property name" in str(parse_error):
+                # Missing quotes around property name or trailing comma
+                logger.info("Attempting to fix property name issue...")
+                # Remove trailing commas more aggressively
+                response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)
+                # Fix unquoted property names (common issue)
+                response_text = re.sub(r'(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', response_text)
+                
+            elif "Expecting ',' delimiter" in str(parse_error):
+                # Missing comma between properties
+                logger.info("Attempting to add missing comma...")
+                pos = parse_error.pos
+                response_text = response_text[:pos] + ',' + response_text[pos:]
+            
+            elif "Expecting value" in str(parse_error):
+                # Trailing comma or missing value
+                logger.info("Attempting to fix value issue...")
+                response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)
+            
+            # Try parsing again
+            try:
+                recommendations_data = json.loads(response_text)
+                logger.info("Successfully repaired JSON!")
+            except json.JSONDecodeError as e2:
+                logger.error(f"JSON repair failed: {e2}")
+                logger.error(f"Full response: {response_text}")
+                raise Exception(f"Unable to parse Gemini response as JSON. Error: {parse_error.msg}")
         
         # Validate structure
         if 'recommendations' not in recommendations_data:
