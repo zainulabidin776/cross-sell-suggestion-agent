@@ -5,6 +5,10 @@ Course: SE4002 - Software Project Management
 Enhanced with Google Gemini AI
 """
 
+# Load environment variables FIRST
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import Flask, request, jsonify, send_from_directory
 import os
 from datetime import datetime
@@ -105,7 +109,7 @@ class ProductDatabase:
         
         # Try to load from cached JSON file
         if self._load_from_json():
-            logger.info("✓ Loaded products from cached JSON (products.json)")
+            logger.info("[OK] Loaded products from cached JSON (products.json)")
         else:
             logger.warning("⚠ Failed to load from JSON, using fallback data")
             self._load_fallback_data()
@@ -236,97 +240,65 @@ product_db = ProductDatabase()
 # RECOMMENDATION ENGINE
 # ============================================================================
 class RecommendationEngine:
-    """Pure LLM-powered cross-sell recommendation engine using Gemini AI"""
+    """Pure Gemini 2.0 Flash recommendation engine - NO fallback, NO dummy data"""
     
-    def __init__(self, product_db: ProductDatabase, use_ai: bool = True):
+    def __init__(self, product_db: ProductDatabase):
         self.db = product_db
-        self.use_ai = use_ai and GEMINI_AVAILABLE
         
     def generate_recommendations(self, 
                                  product_id: str, 
-                                 user_history: List[dict] = None,
-                                 limit: int = 3,
-                                 use_ai: bool = None) -> List[dict]:
-        """Generate cross-sell recommendations using pure LLM intelligence"""
+                                 user_id: Optional[str] = None,
+                                 limit: int = 3) -> List[dict]:
+        """Generate cross-sell recommendations using ONLY Gemini 2.0 Flash"""
         
-        # Override use_ai if explicitly specified
-        if use_ai is not None:
-            ai_enabled = use_ai and GEMINI_AVAILABLE
-        else:
-            ai_enabled = self.use_ai
+        # Check Gemini availability at runtime (not at init)
+        if not GEMINI_AVAILABLE:
+            raise Exception("Gemini AI package not installed. Install: pip install google-generativeai")
+        
+        if not gemini_engine or not gemini_engine.enabled:
+            raise Exception("Gemini AI not initialized. Set GEMINI_API_KEY environment variable.")
+        
+        # Enforce max limit of 5
+        limit = min(max(limit, 1), 5)
         
         product = self.db.get_product(product_id)
         if not product:
-            logger.warning(f"Product {product_id} not found")
-            return []
+            raise Exception(f"Product '{product_id}' not found in catalog. Check available products in /api/search")
         
-        # PRIMARY: Use pure LLM-based recommendations (no pre-computed cross-sell lists)
-        if ai_enabled and gemini_engine and gemini_engine.enabled:
-            try:
-                logger.info(f"Using pure LLM recommendations from Gemini AI for {product_id}")
-                recommendations = gemini_engine.generate_recommendations_from_catalog(
-                    product=product,
-                    all_products=self.db.products,
-                    limit=limit,
-                    user_history=user_history
-                )
-                
-                if recommendations:
-                    logger.info(f"✓ Generated {len(recommendations)} pure LLM recommendations")
-                    return recommendations
-                else:
-                    logger.warning("LLM returned no recommendations, falling back to basic")
-                    
-            except Exception as e:
-                logger.error(f"LLM recommendation failed: {e}. Using fallback")
-        
-        # FALLBACK: Basic rule-based recommendations (only if LLM unavailable/fails)
-        logger.info(f"Using fallback rule-based recommendations for {product_id}")
-        cross_sell_ids = product.get('cross_sell', [])
-        recommendations = []
-        
-        for cs_id in cross_sell_ids:
-            if len(recommendations) >= limit:
-                break
-                
-            cs_product = self.db.get_product(cs_id)
-            if cs_product:
-                # Skip if in user history
-                skip = False
-                if user_history:
-                    for item in user_history:
-                        if item.get('data', {}).get('product_id') == cs_id:
-                            skip = True
-                            break
-                
-                if not skip:
-                    confidence = 0.6  # Lower confidence for rule-based
-                    recommendations.append({
-                        'product_id': cs_id,
-                        'name': cs_product['name'],
-                        'category': cs_product['category'],
-                        'price': cs_product['price'],
-                        'confidence_score': confidence,
-                        'reason': f"Frequently bought with {product['name'][:30]}",
-                        'ai_powered': False
-                    })
-        
-        logger.info(f"Generated {len(recommendations)} fallback recommendations")
-        return recommendations
+        # Use ONLY Gemini 2.0 Flash - no fallback
+        try:
+            logger.info(f"Requesting {limit} recommendations from Gemini 2.0 Flash for product: {product_id}")
+            
+            recommendations = gemini_engine.generate_recommendations_from_catalog(
+                product=product,
+                all_products=self.db.products,
+                limit=limit,
+                user_id=user_id
+            )
+            
+            if not recommendations:
+                raise Exception("Gemini returned empty recommendations")
+            
+            logger.info(f"[OK] Generated {len(recommendations)} Gemini recommendations")
+            return recommendations
+            
+        except Exception as e:
+            logger.error(f"Gemini recommendation failed: {e}")
+            raise
 
 # Initialize Gemini AI (optional - requires GEMINI_API_KEY env variable)
 if GEMINI_AVAILABLE:
     gemini_api_key = os.getenv('GEMINI_API_KEY')
     if gemini_api_key:
         initialize_gemini(gemini_api_key)
-        logger.info("✓ Gemini AI enabled for enhanced recommendations")
+        logger.info("[OK] Gemini AI enabled for enhanced recommendations")
     else:
         logger.info("Gemini API key not set. Set GEMINI_API_KEY environment variable to enable AI recommendations")
 else:
     logger.info("Gemini AI package not installed. Using basic recommendations only")
 
 # Initialize recommendation engine
-rec_engine = RecommendationEngine(product_db, use_ai=True)
+rec_engine = RecommendationEngine(product_db)
 
 
 # -----------------------------
@@ -482,7 +454,7 @@ def recommend():
                 "session_id": {"type": "string"},
                 "product_id": {"type": "string"},
                 "user_id": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1}
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5}
             },
             "required": ["product_id"],
             "additionalProperties": False
@@ -501,17 +473,15 @@ def recommend():
         request_id = data.get('request_id', str(uuid.uuid4()))
         session_id = data.get('session_id', str(uuid.uuid4()))
         product_id = data.get('product_id')
-        limit = data.get('limit', 3)
+        user_id = data.get('user_id')
+        limit = min(data.get('limit', 3), 5)  # Enforce max 5
         
         logger.info(f"Recommendation request: {request_id} for product: {product_id}")
         
-        # Retrieve user history from STM
-        user_history = stm.retrieve(session_id)
-        
-        # Generate recommendations
+        # Generate recommendations using ONLY Gemini 2.0 Flash
         recommendations = rec_engine.generate_recommendations(
             product_id=product_id,
-            user_history=user_history,
+            user_id=user_id,
             limit=limit
         )
         
@@ -530,6 +500,8 @@ def recommend():
             "agent_id": AGENT_METADATA['agent_id'],
             "product_id": product_id,
             "recommendations": recommendations,
+            "model": "gemini-2.0-flash",
+            "limit_enforced": limit,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -538,9 +510,19 @@ def recommend():
         
     except Exception as e:
         logger.error(f"Error processing recommendation: {str(e)}", exc_info=True)
+        error_message = str(e)
+        hint = ""
+        
+        # Add helpful hints based on error type
+        if "not found in catalog" in error_message:
+            hint = "Use /api/search endpoint to find valid product IDs (e.g., fakestore_1, dummyjson_1)"
+        elif "Gemini" in error_message:
+            hint = "Check that GEMINI_API_KEY environment variable is set correctly"
+        
         return jsonify({
             "status": "error",
-            "message": str(e),
+            "message": error_message,
+            "hint": hint if hint else None,
             "timestamp": datetime.now().isoformat()
         }), 500
 

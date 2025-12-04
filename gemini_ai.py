@@ -43,9 +43,18 @@ class GeminiRecommendationEngine:
         
         try:
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-pro')
+            # Use Gemini 2.0 Flash for faster, more efficient responses
+            self.model = genai.GenerativeModel(
+                'gemini-2.0-flash-exp',
+                generation_config={
+                    'temperature': 0.7,
+                    'top_p': 0.95,
+                    'top_k': 40,
+                    'max_output_tokens': 2048,
+                }
+            )
             self.enabled = True
-            logger.info("✓ Gemini AI initialized successfully")
+            logger.info("[OK] Gemini 2.0 Flash initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Gemini AI: {e}")
             self.enabled = False
@@ -54,165 +63,188 @@ class GeminiRecommendationEngine:
                                               product: Dict, 
                                               all_products: Dict[str, Dict],
                                               limit: int = 5,
-                                              user_history: Optional[List[Dict]] = None) -> List[Dict]:
+                                              user_id: Optional[str] = None) -> List[Dict]:
         """
-        Use Gemini AI to generate intelligent recommendations directly from the entire product catalog.
-        No pre-computed cross-sell lists needed - pure LLM-based recommendations.
+        Pure Gemini 2.0 Flash recommendations - NO fallback, NO dummy data.
         
         Args:
             product: The main product dict the user is viewing
             all_products: Complete product catalog dictionary
-            limit: Number of recommendations to return
-            user_history: Optional user history to avoid repetitive suggestions
+            limit: Number of recommendations (max 5)
+            user_id: Optional user identifier for personalization
             
         Returns:
             List of AI-generated recommendations with reasons
         """
         if not self.enabled:
-            logger.warning("Gemini AI not enabled, cannot generate LLM-based recommendations")
-            return []
+            raise Exception("Gemini AI not initialized. Set GEMINI_API_KEY environment variable.")
+        
+        # Enforce max limit of 5
+        limit = min(limit, 5)
         
         try:
-            # Filter out the current product and previously recommended items
-            excluded_ids = {product.get('id')}
-            if user_history:
-                for item in user_history:
-                    rec_id = item.get('data', {}).get('product_id')
-                    if rec_id:
-                        excluded_ids.add(rec_id)
+            # Get current product ID to exclude
+            current_product_id = None
+            for pid, prod in all_products.items():
+                if prod.get('id') == product.get('id'):
+                    current_product_id = pid
+                    break
             
-            # Build catalog for LLM (limit to reasonable size to avoid token limits)
+            # Build catalog excluding current product
             catalog_items = []
             for pid, prod in all_products.items():
-                if prod.get('id') not in excluded_ids and len(catalog_items) < 100:
+                if pid != current_product_id and len(catalog_items) < 70:
                     catalog_items.append({
                         'product_id': pid,
                         'name': prod['name'],
                         'category': prod['category'],
                         'price': prod['price'],
-                        'description': prod.get('description', '')[:100]
+                        'description': prod.get('description', '')[:120]
                     })
             
             if not catalog_items:
-                logger.warning("No catalog items available for recommendations")
-                return []
+                raise Exception("No products available in catalog for recommendations")
             
-            # Build LLM prompt
-            prompt = self._build_llm_catalog_prompt(product, catalog_items, limit)
+            # Build optimized prompt for Gemini 2.0 Flash
+            prompt = self._build_gemini_prompt(product, catalog_items, limit, user_id)
             
-            # Get AI recommendations
-            logger.info(f"Querying Gemini AI for {limit} recommendations from {len(catalog_items)} products")
+            # Query Gemini 2.0 Flash
+            logger.info(f"Querying Gemini 2.0 Flash for {limit} recommendations (user: {user_id or 'anonymous'})")
             response = self.model.generate_content(prompt)
             
-            # Parse and enrich recommendations
-            recommendations = self._parse_llm_catalog_response(response.text, all_products)
+            # Parse and validate JSON response
+            recommendations = self._parse_gemini_response(response.text, all_products)
             
-            logger.info(f"✓ Gemini AI generated {len(recommendations)} pure LLM recommendations")
+            if not recommendations:
+                raise Exception("Gemini returned no valid recommendations")
+            
+            logger.info(f"[OK] Gemini generated {len(recommendations)} recommendations")
             return recommendations[:limit]
             
         except Exception as e:
-            logger.error(f"LLM catalog recommendation failed: {e}")
-            return []
+            logger.error(f"Gemini recommendation failed: {e}")
+            raise
     
-    def _build_llm_catalog_prompt(self, product: Dict, catalog: List[Dict], limit: int) -> str:
-        """Build a prompt for pure LLM-based recommendations from catalog"""
+    def _build_gemini_prompt(self, product: Dict, catalog: List[Dict], limit: int, user_id: Optional[str]) -> str:
+        """Build optimized prompt for Gemini 2.0 Flash"""
         
-        prompt = f"""You are an expert e-commerce recommendation AI. A customer is currently viewing this product:
-
-**CURRENT PRODUCT:**
-- Name: {product['name']}
-- Category: {product['category']}
-- Price: ${product['price']}
-- Description: {product.get('description', 'N/A')[:200]}
-
-**YOUR TASK:**
-Analyze the entire product catalog below and intelligently recommend the top {limit} products that would make excellent cross-sell suggestions. Consider:
-1. Complementary functionality (items that work well together)
-2. Category relationships (related but not identical categories)
-3. Price range compatibility (avoid extreme price mismatches unless justified)
-4. Customer value proposition (genuine utility to the customer)
-
-**PRODUCT CATALOG:**
-"""
-        
-        # Add catalog items (grouped by category for better context)
+        # Group products by category for better context
         from collections import defaultdict
         by_category = defaultdict(list)
         for item in catalog:
             by_category[item['category']].append(item)
         
-        for category, items in sorted(by_category.items()):
-            prompt += f"\n{category.upper()}:\n"
-            for item in items[:20]:  # Limit per category
-                prompt += f"  • {item['product_id']}: {item['name'][:60]} (${item['price']})\n"
+        catalog_text = ""
+        for category in sorted(by_category.keys()):
+            items = by_category[category][:15]  # Limit per category
+            catalog_text += f"\n{category.upper()}:\n"
+            for item in items:
+                catalog_text += f"  • {item['product_id']}: {item['name'][:55]} - ${item['price']}\n"
         
-        prompt += f"""
+        user_context = f" for user {user_id}" if user_id else ""
+        
+        prompt = f"""You are an expert e-commerce AI recommending complementary products{user_context}.
 
-**OUTPUT FORMAT:**
-Return ONLY a JSON array with exactly {limit} recommendations. Each item must have:
-- product_id: the exact product_id from the catalog above
-- reason: a compelling 10-15 word reason explaining WHY this complements the current product
-- confidence_score: float between 0.5-0.95 indicating recommendation strength
+CURRENT PRODUCT:
+Name: {product['name']}
+Category: {product['category']}
+Price: ${product['price']}
+Description: {product.get('description', 'N/A')[:180]}
 
-Example format:
+PRODUCT CATALOG:{catalog_text}
+
+TASK: Recommend exactly {limit} products from the catalog that:
+1. Complement or enhance the current product
+2. Make logical sense together (e.g., accessories, related items, upgrades)
+3. Are relevant to the product category
+4. Provide real value to the customer
+
+RULES:
+- Use ONLY product_id values from the catalog above
+- Provide compelling, specific reasons (10-15 words)
+- Confidence score: 0.70-0.95 (higher = stronger recommendation)
+- Prioritize different categories when logical
+
+OUTPUT FORMAT (JSON only, no markdown):
 [
   {{
-    "product_id": "dummyjson_15",
-    "reason": "Essential accessory that protects your investment and extends product life",
-    "confidence_score": 0.88
+    "product_id": "exact_id_from_catalog",
+    "reason": "Specific compelling reason why this complements the main product",
+    "confidence_score": 0.85
   }}
 ]
 
-IMPORTANT: Return ONLY the JSON array, no markdown, no explanations, just pure JSON."""
+Return ONLY valid JSON array with {limit} items. No markdown, no explanations."""
         
         return prompt
     
-    def _parse_llm_catalog_response(self, response_text: str, all_products: Dict) -> List[Dict]:
-        """Parse LLM response and merge with full product data"""
+    def _parse_gemini_response(self, response_text: str, all_products: Dict) -> List[Dict]:
+        """Parse and validate Gemini JSON response"""
         
         try:
-            # Clean response
+            # Clean response text
             response_text = response_text.strip()
             
-            # Remove markdown code blocks
+            # Remove markdown code blocks if present
             if response_text.startswith('```'):
                 lines = response_text.split('\n')
-                response_text = '\n'.join(lines[1:-1] if lines[-1].strip() == '```' else lines[1:])
-                if response_text.startswith('json'):
-                    response_text = response_text[4:].strip()
+                # Find actual JSON content
+                for i, line in enumerate(lines):
+                    if line.strip().startswith('['):
+                        response_text = '\n'.join(lines[i:])
+                        break
+                # Remove trailing ```
+                if response_text.endswith('```'):
+                    response_text = response_text[:-3].strip()
             
             # Parse JSON
             ai_recommendations = json.loads(response_text)
             
-            # Enrich with full product data
+            if not isinstance(ai_recommendations, list):
+                raise ValueError("Response is not a JSON array")
+            
+            # Validate and enrich with full product data
             enriched = []
             for ai_rec in ai_recommendations:
+                if not isinstance(ai_rec, dict):
+                    continue
+                    
                 pid = ai_rec.get('product_id')
-                if pid and pid in all_products:
-                    product = all_products[pid]
-                    enriched.append({
-                        'product_id': pid,
-                        'name': product['name'],
-                        'category': product['category'],
-                        'price': product['price'],
-                        'confidence_score': round(ai_rec.get('confidence_score', 0.75), 2),
-                        'reason': ai_rec.get('reason', 'AI-recommended complementary product'),
-                        'description': product.get('description', ''),
-                        'image': product.get('image', ''),
-                        'ai_powered': True
-                    })
+                if not pid or pid not in all_products:
+                    logger.warning(f"Invalid product_id: {pid}")
+                    continue
+                
+                product = all_products[pid]
+                confidence = ai_rec.get('confidence_score', 0.75)
+                
+                # Validate confidence score
+                if not isinstance(confidence, (int, float)) or confidence < 0.5 or confidence > 1.0:
+                    confidence = 0.75
+                
+                enriched.append({
+                    'product_id': pid,
+                    'name': product['name'],
+                    'category': product['category'],
+                    'price': product['price'],
+                    'confidence_score': round(confidence, 2),
+                    'reason': ai_rec.get('reason', 'Recommended by AI')[:100],
+                    'description': product.get('description', ''),
+                    'image': product.get('image', ''),
+                    'ai_powered': True,
+                    'model': 'gemini-2.0-flash'
+                })
             
             return enriched
             
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM JSON response: {e}")
-            logger.debug(f"Response text: {response_text[:500]}")
-            return []
+            logger.error(f"JSON parse error: {e}")
+            logger.error(f"Response text: {response_text[:300]}")
+            raise Exception(f"Invalid JSON from Gemini: {str(e)}")
         except Exception as e:
-            logger.error(f"Failed to enrich LLM recommendations: {e}")
-            return []
+            logger.error(f"Failed to process Gemini response: {e}")
+            raise
             
-            logger.info(f"✓ Gemini AI enhanced {len(recommendations)} recommendations")
+            logger.info(f"[OK] Gemini AI enhanced {len(recommendations)} recommendations")
             return recommendations[:limit]
             
         except Exception as e:

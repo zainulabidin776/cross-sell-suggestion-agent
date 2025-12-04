@@ -45,6 +45,9 @@ if __name__ == "__main__":
     print("="*70)
     print()
     
-    # Start the agent
+    # Start the agent by importing and running it
     print("Starting CSSA agent...\n")
-    os.system("python cssa_agent.py")
+    
+    # Import and run the Flask app
+    import cssa_agent
+    cssa_agent.app.run(debug=True, port=5000, host='0.0.0.0')
