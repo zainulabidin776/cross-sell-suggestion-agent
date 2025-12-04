@@ -28,6 +28,11 @@ wheels/
 # Generated data files (products cached from API)
 products.json
 
+# Environment variables (NEVER commit API keys!)
+.env
+.env.local
+*.env
+
 # Database files
 *.db
 *.sqlite
