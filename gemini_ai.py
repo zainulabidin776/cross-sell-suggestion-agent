@@ -356,6 +356,76 @@ Return only the reason text, no quotes or extra formatting."""
         except Exception as e:
             logger.error(f"Failed to generate personalized reason: {e}")
             return f"Complements {main_product['name']}"
+    
+    def generate_generic_recommendations(self, product_name: str, limit: int = 5, user_id: Optional[str] = None) -> List[Dict]:
+        """
+        Generate recommendations for ANY product, even if not in catalog.
+        Uses pure Gemini AI to suggest complementary items.
+        
+        Args:
+            product_name: Natural product name (e.g., "mouse", "laptop", "shirt")
+            limit: Number of recommendations (max 5)
+            user_id: Optional user identifier
+            
+        Returns:
+            List of AI-generated generic recommendations
+        """
+        if not self.enabled:
+            raise Exception("Gemini AI not initialized")
+        
+        limit = min(limit, 5)
+        
+        try:
+            prompt = f"""You are a cross-sell recommendation expert. A customer is interested in buying: "{product_name}"
+
+Generate {limit} complementary product suggestions that work well with this item.
+
+For each recommendation, provide:
+1. Product name (creative but realistic)
+2. Brief reason why it pairs well
+3. Confidence score (0.7-0.95)
+4. Estimated price range
+
+Return ONLY a JSON array in this exact format:
+[
+  {{"name": "Product Name", "reason": "Why it complements the main product", "confidence": 0.85, "price": "$XX-$XX", "category": "category name"}}
+]
+
+Be creative, practical, and focus on genuine cross-sell value."""
+
+            logger.info(f"Generating generic recommendations for: {product_name}")
+            response = self.model.generate_content(prompt)
+            
+            # Parse response
+            text = response.text.strip()
+            if '```json' in text:
+                text = text.split('```json')[1].split('```')[0].strip()
+            elif '```' in text:
+                text = text.split('```')[1].split('```')[0].strip()
+            
+            recommendations = json.loads(text)
+            
+            # Format to match standard structure
+            formatted = []
+            for idx, rec in enumerate(recommendations[:limit]):
+                formatted.append({
+                    'product_id': f'ai_generated_{idx+1}',
+                    'name': rec.get('name', 'Product'),
+                    'category': rec.get('category', 'General'),
+                    'price': rec.get('price', 'N/A'),
+                    'confidence_score': rec.get('confidence', 0.75),
+                    'reason': rec.get('reason', f'Complements {product_name}'),
+                    'ai_powered': True,
+                    'model': 'gemini-2.0-flash',
+                    'source': 'ai_generated'
+                })
+            
+            logger.info(f"[OK] Generated {len(formatted)} AI recommendations for '{product_name}'")
+            return formatted
+            
+        except Exception as e:
+            logger.error(f"Generic recommendation failed: {e}")
+            raise
 
 
 # Global instance (will be initialized in cssa_agent.py)
