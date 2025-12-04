@@ -2,6 +2,7 @@
 Cross-Sell Suggestion Agent (CSSA)
 Team: Awaiz Ali Khan, Zain ul Abideen, Kamran Ali
 Course: SE4002 - Software Project Management
+Enhanced with Google Gemini AI
 """
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -15,6 +16,15 @@ from logging.handlers import RotatingFileHandler
 import sqlite3
 import jsonschema
 from jsonschema import ValidationError
+
+# Import Gemini AI integration
+try:
+    from gemini_ai import initialize_gemini, gemini_engine
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("Gemini AI integration not available")
 
 # Configure logging
 logging.basicConfig(
@@ -226,55 +236,97 @@ product_db = ProductDatabase()
 # RECOMMENDATION ENGINE
 # ============================================================================
 class RecommendationEngine:
-    """AI-powered cross-sell recommendation engine"""
+    """Pure LLM-powered cross-sell recommendation engine using Gemini AI"""
     
-    def __init__(self, product_db: ProductDatabase):
+    def __init__(self, product_db: ProductDatabase, use_ai: bool = True):
         self.db = product_db
+        self.use_ai = use_ai and GEMINI_AVAILABLE
         
     def generate_recommendations(self, 
                                  product_id: str, 
                                  user_history: List[dict] = None,
-                                 limit: int = 3) -> List[dict]:
-        """Generate cross-sell recommendations"""
+                                 limit: int = 3,
+                                 use_ai: bool = None) -> List[dict]:
+        """Generate cross-sell recommendations using pure LLM intelligence"""
+        
+        # Override use_ai if explicitly specified
+        if use_ai is not None:
+            ai_enabled = use_ai and GEMINI_AVAILABLE
+        else:
+            ai_enabled = self.use_ai
         
         product = self.db.get_product(product_id)
         if not product:
             logger.warning(f"Product {product_id} not found")
             return []
         
-        # Get base cross-sell products
+        # PRIMARY: Use pure LLM-based recommendations (no pre-computed cross-sell lists)
+        if ai_enabled and gemini_engine and gemini_engine.enabled:
+            try:
+                logger.info(f"Using pure LLM recommendations from Gemini AI for {product_id}")
+                recommendations = gemini_engine.generate_recommendations_from_catalog(
+                    product=product,
+                    all_products=self.db.products,
+                    limit=limit,
+                    user_history=user_history
+                )
+                
+                if recommendations:
+                    logger.info(f"✓ Generated {len(recommendations)} pure LLM recommendations")
+                    return recommendations
+                else:
+                    logger.warning("LLM returned no recommendations, falling back to basic")
+                    
+            except Exception as e:
+                logger.error(f"LLM recommendation failed: {e}. Using fallback")
+        
+        # FALLBACK: Basic rule-based recommendations (only if LLM unavailable/fails)
+        logger.info(f"Using fallback rule-based recommendations for {product_id}")
         cross_sell_ids = product.get('cross_sell', [])
         recommendations = []
         
-        for cs_id in cross_sell_ids[:limit]:
+        for cs_id in cross_sell_ids:
+            if len(recommendations) >= limit:
+                break
+                
             cs_product = self.db.get_product(cs_id)
             if cs_product:
-                # Calculate confidence score
-                confidence = self.db.transaction_patterns.get(product_id, {}).get(cs_id, 0.5)
-                
-                # Adjust based on user history
+                # Skip if in user history
+                skip = False
                 if user_history:
                     for item in user_history:
                         if item.get('data', {}).get('product_id') == cs_id:
-                            confidence *= 0.7  # Reduce if already shown
+                            skip = True
+                            break
                 
-                recommendations.append({
-                    'product_id': cs_id,
-                    'name': cs_product['name'],
-                    'category': cs_product['category'],
-                    'price': cs_product['price'],
-                    'confidence_score': round(confidence, 2),
-                    'reason': f"Frequently bought with {product['name']}"
-                })
+                if not skip:
+                    confidence = 0.6  # Lower confidence for rule-based
+                    recommendations.append({
+                        'product_id': cs_id,
+                        'name': cs_product['name'],
+                        'category': cs_product['category'],
+                        'price': cs_product['price'],
+                        'confidence_score': confidence,
+                        'reason': f"Frequently bought with {product['name'][:30]}",
+                        'ai_powered': False
+                    })
         
-        # Sort by confidence
-        recommendations.sort(key=lambda x: x['confidence_score'], reverse=True)
-        
-        logger.info(f"Generated {len(recommendations)} recommendations for {product_id}")
+        logger.info(f"Generated {len(recommendations)} fallback recommendations")
         return recommendations
 
+# Initialize Gemini AI (optional - requires GEMINI_API_KEY env variable)
+if GEMINI_AVAILABLE:
+    gemini_api_key = os.getenv('GEMINI_API_KEY')
+    if gemini_api_key:
+        initialize_gemini(gemini_api_key)
+        logger.info("✓ Gemini AI enabled for enhanced recommendations")
+    else:
+        logger.info("Gemini API key not set. Set GEMINI_API_KEY environment variable to enable AI recommendations")
+else:
+    logger.info("Gemini AI package not installed. Using basic recommendations only")
+
 # Initialize recommendation engine
-rec_engine = RecommendationEngine(product_db)
+rec_engine = RecommendationEngine(product_db, use_ai=True)
 
 
 # -----------------------------
