@@ -147,8 +147,22 @@ Rules:
         if start_idx != -1 and end_idx != -1:
             response_text = response_text[start_idx:end_idx+1]
         
+        # Additional JSON cleanup
+        # Fix common issues: trailing commas, single quotes, missing commas
+        import re
+        response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)  # Remove trailing commas
+        response_text = response_text.replace("'", '"')  # Replace single quotes with double quotes
+        
         logger.info(f"Cleaned response: {response_text[:200]}...")
-        recommendations_data = json.loads(response_text)
+        
+        try:
+            recommendations_data = json.loads(response_text)
+        except json.JSONDecodeError as e:
+            # Last resort: try to fix missing commas between objects
+            logger.warning(f"Initial JSON parse failed, attempting fixes: {e}")
+            response_text = re.sub(r'\}(\s*)\{', r'},\1{', response_text)
+            response_text = re.sub(r'\](\s*)\[', r'],\1[', response_text)
+            recommendations_data = json.loads(response_text)
         
         # Validate structure
         if 'recommendations' not in recommendations_data:
@@ -162,7 +176,7 @@ Rules:
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON response: {e}")
-        logger.error(f"Response text: {response.text}")
+        logger.error(f"Response text: {response.text[:1000]}")
         raise Exception(f"Gemini returned invalid JSON: {str(e)}")
     except Exception as e:
         logger.error(f"Error generating recommendations: {e}")
