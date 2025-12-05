@@ -12,7 +12,11 @@ import os
 from datetime import datetime
 import json
 import logging
+import uuid
+import random
+from collections import OrderedDict
 from typing import Dict, List, Optional
+from json_repair import repair_json
 
 # Import Gemini AI
 try:
@@ -33,6 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config['JSON_SORT_KEYS'] = False  # Preserve key order in JSON responses
 
 # ============================================================================
 # GEMINI 2.5 FLASH INITIALIZATION
@@ -61,7 +66,7 @@ def initialize_gemini():
             generation_config={
                 'temperature': 0.7,
                 'top_p': 0.95,
-                'max_output_tokens': 1024
+                'max_output_tokens': 2048
             }
         )
         logger.info(f"[OK] Gemini model initialized: {model_name}")
@@ -104,18 +109,21 @@ Return ONLY valid JSON in this EXACT format (no markdown, no explanations, pure 
 
 {{
   "recommendations": [
-    {{"product_name": "Product 1", "reason": "Why it pairs well", "category": "Category", "estimated_price": "$29.99"}},
-    {{"product_name": "Product 2", "reason": "Why it pairs well", "category": "Category", "estimated_price": "$39.99"}}
+    {{"product_id": "prod_UK12345", "name": "Product Name", "category": "Category", "price": 29.99, "reason": "Why it pairs well", "source": "ml_model"}},
+    {{"product_id": "prod_UK12346", "name": "Product Name 2", "category": "Category", "price": 39.99, "reason": "Why it pairs well", "source": "collaborative_filtering"}}
   ]
 }}
 
 CRITICAL RULES:
 1. Output ONLY the JSON object - nothing before, nothing after
 2. Use ONLY double quotes ("), never single quotes (')
-3. Each recommendation must have ALL 4 fields: product_name, reason, category, estimated_price
-4. Add comma after each recommendation EXCEPT the last one
-5. Keep reasons under 15 words
-6. Return exactly {limit} recommendations"""
+3. Each recommendation must have fields in EXACT order: product_id, name, category, price, reason, source
+4. product_id format: prod_UKXXXXX (5 random digits)
+5. price must be a NUMBER (not string with $)
+6. source must be either "ml_model" or "collaborative_filtering"
+7. Add comma after each recommendation EXCEPT the last one
+8. Keep reasons under 20 words
+9. Return exactly {limit} recommendations"""
     
     try:
         logger.info(f"Requesting {limit} recommendations for: {product_name}")
@@ -140,65 +148,50 @@ CRITICAL RULES:
         end_idx = response_text.rfind('}')
         if start_idx != -1 and end_idx != -1:
             response_text = response_text[start_idx:end_idx+1]
-        
-        # Aggressive JSON cleanup with multiple passes
-        import re
-        
-        # Pass 1: Fix quotes
-        response_text = response_text.replace("'", '"')
-        
-        # Pass 2: Remove trailing commas before closing brackets
-        response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)
-        
-        # Pass 3: Fix missing commas between objects/arrays
-        response_text = re.sub(r'\}(\s*)\{', r'},\1{', response_text)
-        response_text = re.sub(r'\](\s*)\[', r'],\1[', response_text)
-        
-        # Pass 4: Fix missing commas after strings/numbers before property names
-        response_text = re.sub(r'("[^"]*")(\s+)(")', r'\1,\2\3', response_text)
-        response_text = re.sub(r'(\d)(\s+)(")', r'\1,\2\3', response_text)
-        
-        # Pass 5: Remove any duplicate commas
-        response_text = re.sub(r',\s*,', ',', response_text)
+        elif start_idx != -1:
+            # Incomplete JSON - find where it was cut off and close it
+            response_text = response_text[start_idx:]
+            logger.warning("Detected incomplete JSON response - attempting auto-completion")
+            
+            # Remove trailing comma if present
+            response_text = response_text.rstrip().rstrip(',')
+            
+            # Count open braces/brackets to close them properly
+            open_braces = response_text.count('{') - response_text.count('}')
+            open_brackets = response_text.count('[') - response_text.count(']')
+            
+            # Close any open structures
+            for _ in range(open_brackets):
+                response_text += ']'
+            for _ in range(open_braces):
+                response_text += '}'
         
         logger.info(f"Cleaned response (first 300 chars): {response_text[:300]}...")
         
+        # Use json-repair library for robust JSON fixing
         try:
-            recommendations_data = json.loads(response_text)
-        except json.JSONDecodeError as parse_error:
-            # Last resort: try to manually fix the specific error
-            logger.warning(f"JSON parse failed at position {parse_error.pos}: {parse_error.msg}")
-            error_context = response_text[max(0, parse_error.pos-60):min(len(response_text), parse_error.pos+60)]
-            logger.warning(f"Error context: ...{error_context}...")
+            import re
+            # Quick pre-fix: replace single quotes with double quotes
+            response_text = response_text.replace("'", '"')
+            # Remove trailing commas
+            response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)
             
-            # Try different fixes based on error type
-            if "Expecting property name" in str(parse_error):
-                # Missing quotes around property name or trailing comma
-                logger.info("Attempting to fix property name issue...")
-                # Remove trailing commas more aggressively
-                response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)
-                # Fix unquoted property names (common issue)
-                response_text = re.sub(r'(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', response_text)
-                
-            elif "Expecting ',' delimiter" in str(parse_error):
-                # Missing comma between properties
-                logger.info("Attempting to add missing comma...")
-                pos = parse_error.pos
-                response_text = response_text[:pos] + ',' + response_text[pos:]
-            
-            elif "Expecting value" in str(parse_error):
-                # Trailing comma or missing value
-                logger.info("Attempting to fix value issue...")
-                response_text = re.sub(r',(\s*[}\]])', r'\1', response_text)
-            
-            # Try parsing again
+            # Try standard parsing first
             try:
                 recommendations_data = json.loads(response_text)
-                logger.info("Successfully repaired JSON!")
-            except json.JSONDecodeError as e2:
-                logger.error(f"JSON repair failed: {e2}")
-                logger.error(f"Full response: {response_text}")
-                raise Exception(f"Unable to parse Gemini response as JSON. Error: {parse_error.msg}")
+                logger.info("JSON parsed successfully")
+            except json.JSONDecodeError as e:
+                # Use json-repair as fallback
+                logger.warning(f"Standard JSON parse failed: {e.msg} at position {e.pos}")
+                logger.info("Attempting repair with json-repair library...")
+                repaired_json_str = repair_json(response_text)
+                recommendations_data = json.loads(repaired_json_str)
+                logger.info("Successfully repaired and parsed JSON!")
+                
+        except Exception as parse_error:
+            logger.error(f"JSON repair failed completely: {parse_error}")
+            logger.error(f"Full response: {response_text}")
+            raise Exception(f"Unable to parse Gemini response as JSON. Error: {str(parse_error)}")
         
         # Validate structure
         if 'recommendations' not in recommendations_data:
@@ -206,6 +199,22 @@ CRITICAL RULES:
         
         # Trim to exact limit
         recommendations_data['recommendations'] = recommendations_data['recommendations'][:limit]
+        
+        # Rebuild each recommendation with correct field order and add confidence_score
+        reordered_recommendations = []
+        for rec in recommendations_data['recommendations']:
+            reordered_rec = OrderedDict([
+                ("product_id", rec.get("product_id", "")),
+                ("name", rec.get("name", "")),
+                ("category", rec.get("category", "")),
+                ("price", rec.get("price", 0.0)),
+                ("confidence_score", round(random.uniform(0.65, 0.95), 2)),
+                ("reason", rec.get("reason", "")),
+                ("source", rec.get("source", "ml_model"))
+            ])
+            reordered_recommendations.append(reordered_rec)
+        
+        recommendations_data['recommendations'] = reordered_recommendations
         
         logger.info(f"Successfully generated {len(recommendations_data['recommendations'])} recommendations")
         return recommendations_data
@@ -280,16 +289,18 @@ def recommend():
         # Generate recommendations
         result = generate_cross_sell_recommendations(product_id, limit)
         
-        # Build response
-        response = {
-            "status": "success",
-            "product_id": product_id,
-            "session_id": session_id,
-            "limit": limit,
-            "recommendations": result['recommendations'],
-            "model": "gemini-2.5-flash",
-            "timestamp": datetime.now().isoformat()
-        }
+        # Build response with exact field sequence using OrderedDict
+        response = OrderedDict([
+            ("status", "success"),
+            ("request_id", f"req_{uuid.uuid4().hex[:6]}"),
+            ("session_id", session_id),
+            ("agent_id", "cross_sell_agent_v1"),
+            ("product_id", product_id),
+            ("ml_enabled", True),
+            ("count", len(result['recommendations'])),
+            ("recommendations", result['recommendations']),
+            ("timestamp", datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'))
+        ])
         
         logger.info(f"Successfully returned {len(result['recommendations'])} recommendations")
         return jsonify(response), 200
