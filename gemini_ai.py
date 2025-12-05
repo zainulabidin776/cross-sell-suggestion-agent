@@ -243,13 +243,6 @@ Return ONLY valid JSON array with {limit} items. No markdown, no explanations.""
         except Exception as e:
             logger.error(f"Failed to process Gemini response: {e}")
             raise
-            
-            logger.info(f"[OK] Gemini AI enhanced {len(recommendations)} recommendations")
-            return recommendations[:limit]
-            
-        except Exception as e:
-            logger.error(f"Gemini AI recommendation failed: {e}. Falling back to basic recommendations")
-            return candidate_products[:limit]
     
     def _build_recommendation_prompt(self, product: Dict, candidates: List[Dict], limit: int) -> str:
         """Build a prompt for Gemini AI"""
