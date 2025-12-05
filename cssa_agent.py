@@ -328,26 +328,197 @@ def status():
 @app.route('/api/search', methods=['POST'])
 def search():
     """
-    Search endpoint (kept for frontend compatibility)
+    AI-powered product search using Gemini
+    
+    Expected JSON format:
+    {
+        "query": "backpack",
+        "limit": 10  (optional, default 10, max 20)
+    }
     """
     try:
         data = request.get_json()
-        query = data.get('query', '')
         
-        # Simply echo back that this is a search for compatibility
-        return jsonify({
-            "status": "success",
-            "query": query,
-            "message": "Search functionality - type product names in the recommend field",
-            "timestamp": datetime.now().isoformat()
-        }), 200
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "Request body must be valid JSON",
+                "timestamp": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+            }), 400
+        
+        query = data.get('query', '').strip()
+        limit = data.get('limit', 10)
+        limit = max(1, min(limit, 20))  # Limit between 1-20
+        
+        if not query:
+            return jsonify({
+                "status": "error",
+                "message": "Missing required field: query",
+                "timestamp": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+            }), 400
+        
+        logger.info(f"AI search request: '{query}', limit: {limit}")
+        
+        # Load products from products.json
+        products_file = os.path.join(os.path.dirname(__file__), 'products.json')
+        
+        if not os.path.exists(products_file):
+            return jsonify({
+                "status": "error",
+                "message": "Products catalog not found",
+                "timestamp": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+            }), 500
+        
+        with open(products_file, 'r', encoding='utf-8') as f:
+            all_products = json.load(f)
+        
+        # Use Gemini AI for intelligent search
+        if gemini_initialized and gemini_model:
+            search_results = ai_search_products(query, all_products, limit)
+        else:
+            # Fallback to basic search
+            search_results = basic_search_products(query, all_products, limit)
+        
+        # Build response with exact field sequence
+        response = OrderedDict([
+            ("status", "success"),
+            ("query", query),
+            ("count", len(search_results)),
+            ("results", search_results),
+            ("timestamp", datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'))
+        ])
+        
+        logger.info(f"Search for '{query}' returned {len(search_results)} results")
+        return jsonify(response), 200
         
     except Exception as e:
+        logger.error(f"Error in search endpoint: {e}")
         return jsonify({
             "status": "error",
             "message": str(e),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
         }), 500
+
+def ai_search_products(query: str, all_products: dict, limit: int) -> list:
+    """Use Gemini AI to intelligently search and rank products"""
+    
+    # Build product catalog for Gemini
+    catalog_items = []
+    for pid, product in list(all_products.items())[:100]:  # Limit to first 100 to avoid token limits
+        catalog_items.append({
+            'product_id': pid,
+            'name': product.get('name', ''),
+            'category': product.get('category', ''),
+            'price': product.get('price', 0),
+            'description': product.get('description', '')[:100]
+        })
+    
+    # Build prompt for Gemini
+    prompt = f"""You are an intelligent product search engine. Find and rank products that best match the user's search query.
+
+USER QUERY: "{query}"
+
+PRODUCT CATALOG:
+"""
+    
+    for item in catalog_items[:50]:  # Limit prompt size
+        prompt += f"\n- ID: {item['product_id']}, Name: {item['name'][:60]}, Category: {item['category']}, Price: ${item['price']}"
+    
+    prompt += f"""
+
+TASK: Find the top {limit} products that best match the query "{query}".
+Consider:
+1. Exact or partial name matches
+2. Category relevance
+3. Semantic similarity (e.g., "laptop bag" matches "backpack")
+4. Price relevance if mentioned
+
+Return ONLY a JSON array with product_id values, ordered by relevance (most relevant first):
+["product_id_1", "product_id_2", "product_id_3"]
+
+Return exactly {limit} product IDs or fewer if less matches found. Output ONLY the JSON array, no explanations."""
+    
+    try:
+        logger.info(f"Querying Gemini for search: '{query}'")
+        response = gemini_model.generate_content(prompt)
+        response_text = response.text.strip()
+        
+        # Clean response
+        if response_text.startswith('```'):
+            lines = response_text.split('\n')
+            for i, line in enumerate(lines):
+                if line.strip().startswith('['):
+                    response_text = '\n'.join(lines[i:])
+                    break
+            if response_text.endswith('```'):
+                response_text = response_text[:-3].strip()
+        
+        # Parse JSON
+        import re
+        response_text = response_text.replace("'", '"')
+        response_text = re.sub(r',(\s*])', r'\1', response_text)
+        
+        try:
+            product_ids = json.loads(response_text)
+        except json.JSONDecodeError:
+            # Use json-repair
+            from json_repair import repair_json
+            repaired = repair_json(response_text)
+            product_ids = json.loads(repaired)
+        
+        if not isinstance(product_ids, list):
+            raise ValueError("Gemini did not return a list")
+        
+        # Build results with full product data
+        results = []
+        for pid in product_ids:
+            if pid in all_products:
+                product = all_products[pid]
+                results.append(OrderedDict([
+                    ("product_id", pid),
+                    ("name", product.get('name', '')),
+                    ("category", product.get('category', '')),
+                    ("price", product.get('price', 0.0)),
+                    ("description", product.get('description', '')),
+                    ("rating", product.get('rating', 0.0))
+                ]))
+        
+        logger.info(f"Gemini AI search found {len(results)} results")
+        return results[:limit]
+        
+    except Exception as e:
+        logger.warning(f"Gemini search failed: {e}, falling back to basic search")
+        return basic_search_products(query, all_products, limit)
+
+def basic_search_products(query: str, all_products: dict, limit: int) -> list:
+    """Fallback basic text search"""
+    query_lower = query.lower()
+    results = []
+    
+    for product_id, product in all_products.items():
+        name_match = query_lower in product.get('name', '').lower()
+        category_match = query_lower in product.get('category', '').lower()
+        desc_match = query_lower in product.get('description', '').lower()
+        
+        if name_match or category_match or desc_match:
+            # Prioritize name matches
+            score = 3 if name_match else (2 if category_match else 1)
+            results.append({
+                'score': score,
+                'data': OrderedDict([
+                    ("product_id", product_id),
+                    ("name", product.get('name', '')),
+                    ("category", product.get('category', '')),
+                    ("price", product.get('price', 0.0)),
+                    ("description", product.get('description', '')),
+                    ("rating", product.get('rating', 0.0))
+                ])
+            })
+    
+    # Sort by score (highest first)
+    results.sort(key=lambda x: x['score'], reverse=True)
+    
+    return [r['data'] for r in results[:limit]]
 
 # ============================================================================
 # MAIN
